@@ -1,5 +1,6 @@
 import numpy as np
 from collections import Counter
+from sklearn.base import BaseEstimator, ClassifierMixin
 
 
 def find_best_split(feature_vector, target_vector):
@@ -97,13 +98,11 @@ class DecisionTree:
         self._min_samples_leaf = min_samples_leaf
 
     def _fit_node(self, sub_X, sub_y, node, depth=0):
-        # Проверка на однородность классов
         if np.all(sub_y == sub_y[0]):
             node["type"] = "terminal"
             node["class"] = sub_y[0]
             return
 
-        # Проверка ограничений на узел
         if (self._max_depth is not None and depth >= self._max_depth) or \
                 (self._min_samples_split is not None and len(sub_y) < self._min_samples_split) or \
                 (len(np.unique(sub_y)) == 1):
@@ -127,6 +126,7 @@ class DecisionTree:
                     continue
 
                 current_split = feature_vector < threshold
+
                 if self._min_samples_leaf is not None and \
                         (np.sum(current_split) < self._min_samples_leaf or np.sum(
                             ~current_split) < self._min_samples_leaf):
@@ -134,6 +134,7 @@ class DecisionTree:
 
             elif feature_type == "categorical":
                 feature_vector = sub_X[:, feature].copy()
+
                 unique_categories = np.unique(feature_vector)
                 category_probs = {}
                 for cat in unique_categories:
@@ -141,20 +142,26 @@ class DecisionTree:
                     if np.sum(mask) > 0:
                         prob = np.mean(sub_y[mask])
                         category_probs[cat] = prob
+
                 sorted_categories = sorted(category_probs.keys(), key=lambda x: category_probs[x])
                 category_map = {cat: idx for idx, cat in enumerate(sorted_categories)}
+
                 numeric_vector = np.array([category_map[x] for x in feature_vector])
+
                 thresholds, ginis, threshold, gini = find_best_split(numeric_vector, sub_y)
 
                 if gini is None or np.isnan(gini):
                     continue
+
                 numeric_values = np.array([category_map[x] for x in feature_vector])
                 current_split = numeric_values < threshold
+
                 if self._min_samples_leaf is not None and \
                         (np.sum(current_split) < self._min_samples_leaf or np.sum(
                             ~current_split) < self._min_samples_leaf):
                     continue
-                left_categories = [cat for cat in sorted_categories if category_map[cat] < threshold]
+
+                self._left_categories = [cat for cat in sorted_categories if category_map[cat] < threshold]
             else:
                 raise ValueError(f"Unknown feature type: {feature_type}")
 
@@ -165,7 +172,7 @@ class DecisionTree:
                 split = current_split
 
                 if feature_type == "categorical":
-                    self.left_categories = left_categories
+                    node["left_categories"] = self._left_categories.copy()
 
         if feature_best is None:
             node["type"] = "terminal"
@@ -179,7 +186,7 @@ class DecisionTree:
         if self._feature_types[feature_best] == "real":
             node["threshold"] = threshold_best
         elif self._feature_types[feature_best] == "categorical":
-            node["left_categories"] = self.left_categories
+            node["left_categories"] = self._left_categories
 
         node["left_child"], node["right_child"] = {}, {}
         self._fit_node(sub_X[split], sub_y[split], node["left_child"], depth + 1)
@@ -211,3 +218,17 @@ class DecisionTree:
         for x in X:
             predicted.append(self._predict_node(x, self._tree))
         return np.array(predicted)
+
+
+# Обертка для нашего дерева, чтобы оно работало с cross_val_score
+class DecisionTreeWrapper(BaseEstimator, ClassifierMixin):
+    def __init__(self, feature_types):
+        self.feature_types = feature_types
+
+    def fit(self, X, y):
+        self.tree = DecisionTree(feature_types=self.feature_types)
+        self.tree.fit(X, y)
+        return self
+
+    def predict(self, X):
+        return self.tree.predict(X)
